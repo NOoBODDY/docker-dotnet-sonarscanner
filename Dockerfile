@@ -1,53 +1,55 @@
-FROM openjdk:8u171-jre-stretch
+FROM openjdk:24-slim-bookworm
 
-LABEL maintainer="Burak Ince <burak.ince@linux.org.tr>"
+LABEL maintainer="Nick Gorbunov <offmysoap@gmail.com>"
 
-ENV SONAR_SCANNER_MSBUILD_VERSION=4.3.1.1372 \
-    SONAR_SCANNER_VERSION=3.2.0.1227 \
-    DOTNET_SDK_VERSION=2.1 \
-    MONO_DEBIAN_VERSION=5.12.0.226-0xamarin3+debian9b1 \
-    SONAR_SCANNER_MSBUILD_HOME=/opt/sonar-scanner-msbuild \
-    DOTNET_PROJECT_DIR=/project \
-    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true \
-    DOTNET_CLI_TELEMETRY_OPTOUT=true
+ENV \
+    # Do not generate certificate
+    DOTNET_GENERATE_ASPNET_CERTIFICATE=false \
+    # Do not show first run text
+    DOTNET_NOLOGO=true \
+    # SDK version
+    DOTNET_SDK_VERSION=9.0.100 \
+    # Enable correct mode for dotnet watch (only mode supported in a container)
+    DOTNET_USE_POLLING_FILE_WATCHER=true \
+    # Skip extraction of XML docs - generally not useful within an image/container - helps performance
+    NUGET_XMLDOC_MODE=skip \
+    # PowerShell telemetry for docker image usage
+    POWERSHELL_DISTRIBUTION_CHANNEL=PSDocker-DotnetSDK-Debian-12
 
-RUN set -x \
-  && apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 3FA7E0328081BFF6A14DA29AA6A19B38D3D831EF \
-  && echo "deb http://download.mono-project.com/repo/debian stable-stretch main" | tee /etc/apt/sources.list.d/mono-official-stable.list \
-  && apt-get update \
-  && apt-get install \
-    curl \
-    libunwind8 \
-    gettext \
-    apt-transport-https \
-    mono-complete="$MONO_DEBIAN_VERSION" \
-    ca-certificates-mono="$MONO_DEBIAN_VERSION" \
-    referenceassemblies-pcl \
-    mono-xsp4 \
-    wget \
-    unzip \
-    -y \
-  && curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg \
-  && mv microsoft.gpg /etc/apt/trusted.gpg.d/microsoft.gpg \
-  && sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/debian/9/prod stretch main" > /etc/apt/sources.list.d/microsoft-prod.list' \
-  && apt-get update \
-  && apt-get install dotnet-sdk-$DOTNET_SDK_VERSION -y \
-  && apt-get clean \
-  && rm -rf /var/lib/apt/lists/*
-RUN wget https://github.com/SonarSource/sonar-scanner-msbuild/releases/download/$SONAR_SCANNER_MSBUILD_VERSION/sonar-scanner-msbuild-$SONAR_SCANNER_MSBUILD_VERSION-net46.zip -O /opt/sonar-scanner-msbuild.zip \
-  && mkdir -p $SONAR_SCANNER_MSBUILD_HOME \
-  && mkdir -p $DOTNET_PROJECT_DIR \
-  && unzip /opt/sonar-scanner-msbuild.zip -d $SONAR_SCANNER_MSBUILD_HOME \
-  && rm /opt/sonar-scanner-msbuild.zip \
-  && chmod 775 $SONAR_SCANNER_MSBUILD_HOME/*.exe \
-  && chmod 775 $SONAR_SCANNER_MSBUILD_HOME/**/bin/* \
-  && chmod 775 $SONAR_SCANNER_MSBUILD_HOME/**/lib/*.jar
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        libatomic1 \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="$SONAR_SCANNER_MSBUILD_HOME:$SONAR_SCANNER_MSBUILD_HOME/sonar-scanner-$SONAR_SCANNER_VERSION/bin:${PATH}"
+# Install .NET SDK
+RUN curl -fSL --output dotnet.tar.gz https://dotnetcli.azureedge.net/dotnet/Sdk/$DOTNET_SDK_VERSION/dotnet-sdk-$DOTNET_SDK_VERSION-linux-x64.tar.gz \
+    && dotnet_sha512='7f69bda047de1f952286be330a5e858171ded952d1aa24169e62212f90a27149e63b636c88ad313a6e3ec860da31f8c547ff4ab6808103a070f7fb26ba99c1c7' \
+    && echo "$dotnet_sha512  dotnet.tar.gz" | sha512sum -c - \
+    && mkdir -p /usr/share/dotnet \
+    && tar -oxzf dotnet.tar.gz -C /usr/share/dotnet ./packs ./sdk ./sdk-manifests ./templates ./LICENSE.txt ./ThirdPartyNotices.txt \
+    && rm dotnet.tar.gz \
+    # Trigger first run experience by running arbitrary cmd
+    && dotnet help
 
-COPY run.sh $SONAR_SCANNER_MSBUILD_HOME/sonar-scanner-$SONAR_SCANNER_VERSION/bin/
+# Install PowerShell global tool
+RUN powershell_version=7.5.0-preview.5 \
+    && curl -fSL --output PowerShell.Linux.x64.$powershell_version.nupkg https://powershellinfraartifacts-gkhedzdeaghdezhr.z01.azurefd.net/tool/$powershell_version/PowerShell.Linux.x64.$powershell_version.nupkg \
+    && powershell_sha512='149934997170960f00f9df9720d000fc901fe40bc83399751dfeefbe514b5e2b4d1f76c8dfdbfaafbb7b5a2bdfc14e235055a9529d80d57312856ee5c8d54ea9' \
+    && echo "$powershell_sha512  PowerShell.Linux.x64.$powershell_version.nupkg" | sha512sum -c - \
+    && mkdir -p /usr/share/powershell \
+    && dotnet tool install --add-source / --tool-path /usr/share/powershell --version $powershell_version PowerShell.Linux.x64 \
+    && dotnet nuget locals all --clear \
+    && rm PowerShell.Linux.x64.$powershell_version.nupkg \
+    && ln -s /usr/share/powershell/pwsh /usr/bin/pwsh \
+    && chmod 755 /usr/share/powershell/pwsh \
+    # To reduce image size, remove the copy nupkg that nuget keeps.
+    && find /usr/share/powershell -print | grep -i '.*[.]nupkg$' | xargs rm
 
-VOLUME $DOTNET_PROJECT_DIR
-WORKDIR $DOTNET_PROJECT_DIR
+RUN dotnet tool install --global dotnet-sonarscanner
+
+COPY run.sh /
 
 ENTRYPOINT ["run.sh"]
